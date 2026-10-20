@@ -1,12 +1,13 @@
 # @botlisttop/sdk
 
-SDK officiel de [Bot List](https://beta.botlist.top), l'annuaire de bots Discord.
+SDK officiel de [Bot List](https://botlist.top), l'annuaire de bots Discord.
 
 Ajouté à votre bot discord.js, il envoie automatiquement à Bot List :
 
 - le **nombre réel de serveurs** du bot (toutes shards additionnées), affiché sur sa fiche ;
 - un **signal de vie** (heartbeat), qui permet au site d'afficher le bot **« En ligne »** ou **« Hors ligne »** ;
-- ses **commandes slash** globales, affichées dans l'onglet **« Commandes »** de sa fiche.
+- ses **commandes slash** globales, affichées dans l'onglet **« Commandes »** de sa fiche ;
+- son **profil** (nom, avatar, bannière), pour que sa fiche reste à jour quand vous les modifiez sur Discord.
 
 Une ligne suffit : le SDK s'occupe de la planification, du sharding, des limites de requêtes et des erreurs réseau, sans jamais faire planter votre bot.
 
@@ -21,6 +22,7 @@ Une ligne suffit : le SDK s'occupe de la planification, du sharding, des limites
 - [Sharding](#sharding)
 - [Statut en ligne / hors ligne](#statut-en-ligne--hors-ligne)
 - [Commandes slash](#commandes-slash)
+- [Profil du bot](#profil-du-bot)
 - [Gestion des erreurs](#gestion-des-erreurs)
 - [Limites](#limites)
 - [FAQ](#faq)
@@ -50,7 +52,7 @@ pnpm add @botlisttop/sdk
 
 ## Obtenir sa clé API
 
-1. Connectez-vous sur [Bot List](https://beta.botlist.top) et ouvrez votre **Dashboard**.
+1. Connectez-vous sur [Bot List](https://botlist.top) et ouvrez votre **Dashboard**.
 2. Ouvrez la **fiche de votre bot**.
 3. Rendez-vous dans la section **API développeur**.
 4. Cliquez sur **Générer la clé** (ou **Afficher la clé** si elle existe déjà). Elle commence par `blt_`.
@@ -91,7 +93,7 @@ new BotListClient(client, { token: process.env.BOTLIST_TOKEN! });
 client.login(process.env.DISCORD_TOKEN);
 ```
 
-C'est tout. Dès que le bot est connecté, le SDK envoie ses statistiques, puis recommence toutes les 5 minutes. Juste après, il envoie aussi ses commandes slash, puis vérifie toutes les heures si elles ont changé.
+C'est tout. Dès que le bot est connecté, le SDK envoie ses statistiques, puis recommence toutes les 5 minutes. Juste après, il envoie aussi ses commandes slash et son profil, puis vérifie toutes les heures s'ils ont changé.
 
 L'intent `Guilds` est nécessaire pour que discord.js connaisse la liste des serveurs.
 
@@ -104,9 +106,10 @@ L'intent `Guilds` est nécessaire pour que discord.js connaisse la liste des ser
 | `token`    | `string`  | requis                     | Clé API du bot (`blt_...`). |
 | `autoPost` | `boolean` | `true`                     | Envoie automatiquement les statistiques. Avec `false`, rien n'est envoyé tant que vous n'appelez pas `start()` ou `postStats()`. |
 | `interval` | `number`  | automatique (300 s)        | Délai entre deux envois, **en secondes**. Par défaut, le SDK suit la valeur conseillée par l'API. Une valeur fixe est ramenée entre **60 s** et **840 s**, avec un avertissement dans la console. Au-delà de 840 s, le bot risquerait de passer « Hors ligne ». |
-| `baseUrl`  | `string`  | `https://beta.botlist.top` | URL de l'API Bot List. |
+| `baseUrl`  | `string`  | `https://botlist.top`      | URL de l'API Bot List. |
 | `debug`    | `boolean` | `false`                    | Affiche des logs de diagnostic préfixés par `[BotList]`. La clé n'apparaît jamais en clair : elle est masquée (`blt_****`). |
 | `postCommands` | `boolean` | `true`               | Envoie automatiquement les commandes slash globales du bot (voir [Commandes slash](#commandes-slash)). Avec `false`, elles ne sont envoyées que si vous appelez `postCommands()`. |
+| `postProfile` | `boolean` | `true`                | Tient à jour le nom, l'avatar et la bannière du bot sur sa fiche (voir [Profil du bot](#profil-du-bot)). Avec `false`, le profil n'est envoyé que si vous appelez `postProfile()`. |
 
 ## Méthodes et événements
 
@@ -116,8 +119,9 @@ L'intent `Guilds` est nécessaire pour que discord.js connaisse la liste des ser
 | ------------- | --------------------------- | ----------- |
 | `postStats()` | `Promise<PushData \| null>` | Envoie les statistiques immédiatement et renvoie la réponse de l'API. Renvoie `null` sur une shard autre que 0. En cas d'échec, la promesse est rejetée avec une `BotListError` : pensez au `try/catch`. |
 | `postCommands()` | `Promise<CommandsData \| null>` | Récupère les commandes slash globales et les envoie immédiatement, même si elles n'ont pas changé. Renvoie `null` sur une shard autre que 0. Rejette avec une `BotListError` en cas d'échec. |
+| `postProfile()` | `Promise<ProfileData \| null>` | Récupère le nom, l'avatar et la bannière du bot et les envoie immédiatement, même s'ils n'ont pas changé. Renvoie `null` sur une shard autre que 0. Rejette avec une `BotListError` en cas d'échec. |
 | `start()`     | `void`                      | Démarre l'envoi automatique. Appelée par le constructeur sauf si `autoPost` vaut `false`. Sans effet si l'envoi tourne déjà. |
-| `stop()`      | `void`                      | Arrête l'envoi automatique (statistiques et commandes). Le bot passera « Hors ligne » 15 minutes après le dernier envoi. |
+| `stop()`      | `void`                      | Arrête l'envoi automatique (statistiques, commandes et profil). Le bot passera « Hors ligne » 15 minutes après le dernier envoi. |
 
 La propriété `running` (`boolean`) indique si l'envoi automatique est actif.
 
@@ -142,14 +146,24 @@ L'objet `CommandsData` renvoyé après un envoi de commandes :
 | `changed`        | `boolean` | `false` si la liste était identique à celle déjà enregistrée. |
 | `received_at`    | `string`  | Date de réception (ISO 8601). |
 
+L'objet `ProfileData` renvoyé après un envoi de profil :
+
+| Champ             | Type      | Description |
+| ----------------- | --------- | ----------- |
+| `bot_id`          | `string`  | ID Discord du bot. |
+| `changed`         | `boolean` | `false` si le profil était identique à celui déjà enregistré. |
+| `review_required` | `boolean` | `true` si le nom a changé : la fiche repasse en attente de vérification. |
+| `received_at`     | `string`  | Date de réception (ISO 8601). |
+
 ### Événements
 
 | Événement     | Argument                 | Quand |
 | ------------- | ------------------------ | ----- |
 | `posted`      | `data: PushData`         | Après chaque envoi réussi (automatique ou manuel). |
 | `commandsPosted` | `data: CommandsData` | Après chaque envoi de commandes réussi (automatique ou manuel). |
+| `profilePosted` | `data: ProfileData` | Après chaque envoi de profil réussi (automatique ou manuel). |
 | `error`       | `error: BotListError`    | Lors d'un échec de l'envoi automatique. Voir [Gestion des erreurs](#gestion-des-erreurs). |
-| `ratelimited` | `retryAfter: number`     | Quand l'API impose une pause (HTTP 429), pour les statistiques comme pour les commandes. `retryAfter` est en secondes. Le SDK reprend seul ensuite. |
+| `ratelimited` | `retryAfter: number`     | Quand l'API impose une pause (HTTP 429), pour les statistiques, les commandes comme le profil. `retryAfter` est en secondes. Le SDK reprend seul ensuite. |
 
 Si aucun écouteur `error` n'est attaché, le SDK affiche l'erreur dans la console au lieu de la lever : votre bot ne plante jamais à cause de Bot List.
 
@@ -235,7 +249,7 @@ Sans envoi régulier (au moins toutes les 15 minutes), le bot apparaîtra « Hor
 
 Avec un `ShardingManager`, initialisez le SDK **dans le fichier du bot** (celui que lance le manager), pas dans le fichier du manager. Le SDK gère le reste :
 
-- toutes les shards l'initialisent, mais **seule la shard 0** envoie les statistiques et les commandes slash ;
+- toutes les shards l'initialisent, mais **seule la shard 0** envoie les statistiques, les commandes slash et le profil ;
 - la shard 0 additionne les serveurs de **toutes** les shards (via `client.shard.fetchClientValues`) et envoie le nombre de shards ;
 - si certaines shards ne sont pas encore prêtes au démarrage, le SDK réessaie automatiquement quelques secondes plus tard.
 
@@ -349,6 +363,47 @@ client.once('clientReady', async () => {
 });
 ```
 
+## Profil du bot
+
+Le SDK tient à jour le **nom**, l'**avatar** et la **bannière** du bot sur sa fiche Bot List. Changez-les sur le [portail développeur Discord](https://discord.com/developers/applications) : la fiche suit, sans rien faire de plus.
+
+**Quand**
+
+- Une première fois juste après le premier envoi réussi des statistiques.
+- Puis toutes les **heures**, et seulement si le profil a changé depuis le dernier envoi réussi.
+- Quand discord.js signale une modification du compte du bot (événement `userUpdate`), le profil part **5 secondes** plus tard, sans attendre la vérification suivante.
+- Comme pour les commandes, ces envois ont leur propre minuteur : un échec ne touche jamais le signal de vie.
+
+Le profil est lu auprès de Discord via `client.rest` : aucun intent supplémentaire n'est nécessaire.
+
+**Changement de nom : nouvelle vérification**
+
+Un changement de **nom** fait repasser la fiche **en attente de vérification** : l'équipe Bot List doit valider le nouveau nom avant que la fiche ne soit de nouveau publiée. Le SDK l'indique dans la console, et `review_required` vaut `true` dans l'événement `profilePosted`. Un changement d'avatar ou de bannière, lui, est appliqué directement.
+
+Pour ne pas envoyer le profil, passez `postProfile: false`.
+
+**JavaScript**
+
+```js
+botlist.on('profilePosted', (data) => {
+  if (data.review_required) {
+    console.warn('Bot List : nouveau nom envoyé, fiche en attente de vérification.');
+  }
+});
+```
+
+**TypeScript**
+
+```ts
+import type { ProfileData } from '@botlisttop/sdk';
+
+botlist.on('profilePosted', (data: ProfileData) => {
+  if (data.review_required) {
+    console.warn('Bot List : nouveau nom envoyé, fiche en attente de vérification.');
+  }
+});
+```
+
 ## Gestion des erreurs
 
 Toutes les erreurs sont des instances de `BotListError`, avec :
@@ -366,7 +421,7 @@ Toutes les erreurs sont des instances de `BotListError`, avec :
 | HTTP          | `code`                                     | Signification | Réaction du SDK | Que faire |
 | ------------- | ------------------------------------------ | ------------- | --------------- | --------- |
 | -             | `missing_token`                            | Aucune clé fournie. | Aucun envoi. | Vérifiez que `BOTLIST_TOKEN` est défini et que le `.env` est bien chargé. |
-| 401           | `missing_token`, `invalid_token`           | Clé absente ou invalide. | **Arrêt** de tous les envois automatiques (statistiques et commandes). | Régénérez la clé dans le dashboard (fiche du bot > API développeur) et mettez à jour le `.env`. |
+| 401           | `missing_token`, `invalid_token`           | Clé absente ou invalide. | **Arrêt** de tous les envois automatiques (statistiques, commandes et profil). | Régénérez la clé dans le dashboard (fiche du bot > API développeur) et mettez à jour le `.env`. |
 | 403           | `bot_mismatch`                             | La clé appartient à un autre bot. | **Arrêt**. | Utilisez la clé du bot connecté, ou vérifiez que vous lancez le bon bot. |
 | 403           | `owner_banned`                             | Le propriétaire du bot est banni. | **Arrêt**. | Contactez l'équipe Bot List. |
 | 403           | `forbidden`                                | Envoi refusé pour ce bot. | **Arrêt**. | Vérifiez que le bot est bien enregistré sur Bot List. |
@@ -379,8 +434,9 @@ Toutes les erreurs sont des instances de `BotListError`, avec :
 | -             | `client_not_ready`                         | `postStats()` appelé avant la connexion à Discord. | - | Attendez l'événement `clientReady`. |
 | -             | `shards_not_ready`                         | Shards pas toutes prêtes. | Nouvel essai sous peu. | Rien. |
 | -             | `commands_fetch_failed`                    | Discord n'a pas renvoyé les commandes du bot. | Nouvel essai après 30 s, 60 s, 120 s... (au plus 1 h). Les statistiques continuent. | Rien si c'est ponctuel. Sinon, vérifiez que le bot est bien connecté. |
+| -             | `profile_fetch_failed`                     | Discord n'a pas renvoyé le profil du bot. | Nouvel essai après 30 s, 60 s, 120 s... (au plus 1 h). Les statistiques continuent. | Rien si c'est ponctuel. Sinon, vérifiez que le bot est bien connecté. |
 
-Une erreur 422, 429, 5xx ou réseau sur les commandes est traitée de la même façon que pour les statistiques, avec son propre délai : elle ne touche jamais le signal de vie. Seules les erreurs de clé (401 / 403) arrêtent tout.
+Une erreur 422, 429, 5xx ou réseau sur les commandes ou le profil est traitée de la même façon que pour les statistiques, avec son propre délai : elle ne touche jamais le signal de vie. Seules les erreurs de clé (401 / 403) arrêtent tout.
 
 Après un arrêt dû à la clé (401 / 403), corrigez la clé puis redémarrez le bot. Vous pouvez aussi recréer un `BotListClient` avec la nouvelle clé.
 
@@ -412,7 +468,7 @@ botlist.on('error', (error: BotListError) => {
 
 ## Limites
 
-- **10 requêtes par minute et par bot**, **partagées** entre les statistiques et les commandes. L'envoi automatique en utilise une toutes les 5 minutes, plus une pour les commandes quand elles changent : la limite ne concerne que les appels manuels à `postStats()` et `postCommands()`. En cas de dépassement, le SDK attend le délai indiqué par l'API.
+- **10 requêtes par minute et par bot**, **partagées** entre les statistiques, les commandes et le profil. L'envoi automatique en utilise une toutes les 5 minutes, plus une pour les commandes ou le profil quand ils changent : la limite ne concerne que les appels manuels à `postStats()`, `postCommands()` et `postProfile()`. En cas de dépassement, le SDK attend le délai indiqué par l'API.
 - Commandes : **250 au maximum**, **512 Ko** au maximum pour l'ensemble.
 - Intervalle minimum : **60 s**. Intervalle maximum : **840 s** (14 min), pour rester sous la fenêtre de 15 minutes du statut en ligne.
 - Délai maximum d'une requête : **10 s**.
@@ -435,6 +491,13 @@ botlist.on('error', (error: BotListError) => {
 - Le SDK vérifie les commandes une fois par heure : une modification peut mettre **jusqu'à 1 heure** à apparaître. Appelez `postCommands()` après votre déploiement pour l'envoyer tout de suite.
 - Vérifiez que `postCommands` n'est pas à `false`, et écoutez l'événement `error` (par exemple `payload_too_large`).
 - Aucun intent n'est nécessaire pour les commandes : inutile d'en ajouter.
+
+**Le nom ou l'avatar de mon bot n'est pas à jour sur sa fiche.**
+- Le SDK envoie le profil dès que discord.js signale la modification, et le vérifie de toute façon toutes les heures. Appelez `postProfile()` pour l'envoyer tout de suite.
+- Vérifiez que `postProfile` n'est pas à `false`, et écoutez l'événement `error`.
+
+**Ma fiche est repassée « en attente » après un changement de nom.**
+C'est voulu : tout nouveau nom est vérifié par l'équipe Bot List avant que la fiche ne soit de nouveau publiée. L'avatar et la bannière, eux, ne déclenchent pas de vérification.
 
 **J'ai l'erreur `bot_mismatch`.**
 La clé a été générée pour un autre bot. Chaque bot a sa propre clé : utilisez celle de la fiche du bot que vous lancez.
@@ -460,7 +523,7 @@ Le dossier [`examples/`](./examples) contient :
 
 - [`simple-bot.js`](./examples/simple-bot.js) : bot simple ;
 - [`sharding/`](./examples/sharding) : bot avec `ShardingManager` ;
-- [`events.ts`](./examples/events.ts) : usage des événements, de l'envoi manuel et des commandes slash en TypeScript.
+- [`events.ts`](./examples/events.ts) : usage des événements, de l'envoi manuel, des commandes slash et du profil en TypeScript.
 
 ## Licence
 

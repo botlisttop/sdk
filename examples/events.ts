@@ -1,6 +1,6 @@
-// Usage complet des événements, de l'envoi manuel et des commandes slash, en TypeScript.
+// Usage complet des événements, de l'envoi manuel, des commandes slash et du profil, en TypeScript.
 import { Client, Events, GatewayIntentBits } from 'discord.js';
-import { BotListClient, BotListError, type CommandsData, type PushData } from '@botlisttop/sdk';
+import { BotListClient, BotListError, type CommandsData, type ProfileData, type PushData } from '@botlisttop/sdk';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -16,6 +16,13 @@ botlist.on('posted', (data: PushData) => {
 botlist.on('commandsPosted', (data: CommandsData) => {
   const state = data.changed ? 'mises à jour' : 'inchangées';
   console.log(`Bot List : ${data.commands_count} commandes ${state}.`);
+});
+
+botlist.on('profilePosted', (data: ProfileData) => {
+  if (data.review_required) {
+    // Le nom a changé : la fiche repasse en attente de vérification sur Bot List.
+    console.warn('Bot List : nouveau nom envoyé, fiche en attente de vérification.');
+  }
 });
 
 botlist.on('ratelimited', (retryAfter: number) => {

@@ -15,7 +15,8 @@ export type BotListErrorCode =
   | 'invalid_response'
   | 'client_not_ready'
   | 'shards_not_ready'
-  | 'commands_fetch_failed';
+  | 'commands_fetch_failed'
+  | 'profile_fetch_failed';
 
 export interface BotListErrorOptions {
   code: BotListErrorCode;
@@ -97,5 +98,7 @@ export function describeError(code: BotListErrorCode, context: { botId?: string;
       return "Toutes les shards ne sont pas encore prêtes : impossible de compter les serveurs. Nouvel essai sous peu.";
     case 'commands_fetch_failed':
       return "Impossible de récupérer les commandes slash du bot auprès de Discord. Nouvel essai sous peu.";
+    case 'profile_fetch_failed':
+      return "Impossible de récupérer le profil du bot (nom, avatar, bannière) auprès de Discord. Nouvel essai sous peu.";
   }
 }

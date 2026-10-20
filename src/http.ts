@@ -1,5 +1,5 @@
 import { BotListError, describeError, type BotListErrorCode } from './errors.js';
-import type { CommandsData, CommandsPayload, PushData, PushPayload } from './types.js';
+import type { CommandsData, CommandsPayload, ProfileData, ProfilePayload, PushData, PushPayload } from './types.js';
 import { SDK_VERSION } from './version.js';
 
 export const REQUEST_TIMEOUT_MS = 10_000;
@@ -32,6 +32,7 @@ interface ApiRequest<P> {
 
 export type PushRequest = ApiRequest<PushPayload>;
 export type CommandsRequest = ApiRequest<CommandsPayload>;
+export type ProfileRequest = ApiRequest<ProfilePayload>;
 
 /** Envoie les statistiques à Bot List. Rejette toujours avec une `BotListError`. */
 export function pushStats(request: PushRequest): Promise<PushData> {
@@ -43,7 +44,12 @@ export function pushCommands(request: CommandsRequest): Promise<CommandsData> {
   return post<CommandsData>('/api/sdk/commands', request);
 }
 
-async function post<T>(path: string, { baseUrl, token, payload }: ApiRequest<PushPayload | CommandsPayload>): Promise<T> {
+/** Envoie le nom, l'avatar et la bannière du bot à Bot List. Rejette toujours avec une `BotListError`. */
+export function pushProfile(request: ProfileRequest): Promise<ProfileData> {
+  return post<ProfileData>('/api/sdk/profile', request);
+}
+
+async function post<T>(path: string, { baseUrl, token, payload }: ApiRequest<PushPayload | CommandsPayload | ProfilePayload>): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   timeout.unref?.();

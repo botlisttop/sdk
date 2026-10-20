@@ -5,6 +5,7 @@ export {
   DEFAULT_INTERVAL,
   MIN_INTERVAL,
   MAX_INTERVAL,
+  PROFILE_INTERVAL,
 } from './client.js';
 export { BotListError } from './errors.js';
 export type { BotListErrorCode } from './errors.js';
@@ -13,6 +14,8 @@ export type {
   BotListEvents,
   CommandsData,
   CommandsPayload,
+  ProfileData,
+  ProfilePayload,
   PushData,
   PushPayload,
 } from './types.js';
