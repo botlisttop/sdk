@@ -2,13 +2,14 @@ import { EventEmitter } from 'node:events';
 import type { Client } from 'discord.js';
 import { BotListError, describeError } from './errors.js';
 import { fetchGlobalCommands, hashCommands, prepareCommands } from './commands.js';
-import { pushCommands, pushStats } from './http.js';
+import { pushCommands, pushProfile, pushStats } from './http.js';
 import { Logger, maskToken } from './logger.js';
+import { fetchBotProfile, profileKey, type BotProfile } from './profile.js';
 import { collectStats, isPrimaryShard } from './stats.js';
-import type { BotListClientOptions, BotListEvents, CommandsData, PushData } from './types.js';
+import type { BotListClientOptions, BotListEvents, CommandsData, ProfileData, PushData } from './types.js';
 import { SDK_VERSION } from './version.js';
 
-export const DEFAULT_BASE_URL = 'https://beta.botlist.top';
+export const DEFAULT_BASE_URL = 'https://botlist.top';
 /** Intervalle par défaut tant que l'API n'a pas donné `next_push_in`, en secondes. */
 export const DEFAULT_INTERVAL = 300;
 export const MIN_INTERVAL = 60;
@@ -18,7 +19,22 @@ export const MAX_INTERVAL = 840;
 export const BACKOFF_BASE = 30;
 /** Délai entre deux vérifications des commandes slash, en secondes. */
 export const COMMANDS_INTERVAL = 3600;
+/** Délai entre deux vérifications du profil (nom, avatar, bannière), en secondes. */
+export const PROFILE_INTERVAL = 3600;
+/** Attente après un `userUpdate`, pour regrouper plusieurs modifications rapprochées. */
+const PROFILE_UPDATE_DELAY_MS = 5_000;
 const READY_POLL_MS = 2_000;
+
+/** Envois secondaires, chacun avec son propre minuteur : ils ne retardent jamais le signal de vie. */
+type SyncKind = 'commands' | 'profile';
+
+const SYNC_INTERVALS: Record<SyncKind, number> = { commands: COMMANDS_INTERVAL, profile: PROFILE_INTERVAL };
+const SYNC_LABELS: Record<SyncKind, string> = { commands: 'commandes', profile: 'profil' };
+
+interface SyncState {
+  timer: NodeJS.Timeout | null;
+  failures: number;
+}
 
 type Listener<E extends keyof BotListEvents> = (...args: BotListEvents[E]) => void;
 
@@ -32,8 +48,8 @@ export interface BotListClient {
 }
 
 /**
- * Envoie automatiquement à Bot List le nombre de serveurs du bot, un signal de vie
- * et ses commandes slash globales.
+ * Envoie automatiquement à Bot List le nombre de serveurs du bot, un signal de vie,
+ * ses commandes slash globales et son profil (nom, avatar, bannière).
  *
  * ```js
  * const botlist = new BotListClient(client, { token: process.env.BOTLIST_TOKEN });
@@ -48,6 +64,7 @@ export class BotListClient extends EventEmitter {
   readonly #fixedInterval: number | null;
   readonly #logger: Logger;
   readonly #autoCommands: boolean;
+  readonly #autoProfile: boolean;
 
   #running = false;
   #timer: NodeJS.Timeout | null = null;
@@ -56,13 +73,20 @@ export class BotListClient extends EventEmitter {
   #apiInterval = DEFAULT_INTERVAL;
   #failures = 0;
 
-  #commandsTimer: NodeJS.Timeout | null = null;
-  #commandsStarted = false;
-  #commandsFailures = 0;
+  readonly #sync: Record<SyncKind, SyncState> = {
+    commands: { timer: null, failures: 0 },
+    profile: { timer: null, failures: 0 },
+  };
+  /** `true` une fois les envois secondaires lancés, après le premier signal de vie réussi. */
+  #syncStarted = false;
+  #userUpdateListener: ((oldUser: unknown, newUser: unknown) => void) | null = null;
+
   /** Empreinte de la dernière liste envoyée avec succès. */
   #sentCommandsHash: string | null = null;
   /** Empreinte d'une liste refusée car trop volumineuse (413) : pas de renvoi tant qu'elle ne change pas. */
   #rejectedCommandsHash: string | null = null;
+  /** Dernier profil envoyé avec succès. */
+  #sentProfileKey: string | null = null;
 
   constructor(client: Client, options: BotListClientOptions) {
     super();
@@ -76,6 +100,7 @@ export class BotListClient extends EventEmitter {
     this.baseUrl = (options?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.#fixedInterval = this.#resolveInterval(options?.interval);
     this.#autoCommands = options?.postCommands !== false;
+    this.#autoProfile = options?.postProfile !== false;
 
     this.#logger.debug(
       `SDK ${SDK_VERSION} initialisé (clé : ${maskToken(this.#token)}, intervalle : ${
@@ -142,6 +167,18 @@ export class BotListClient extends EventEmitter {
     return this.#sendCommands(botId, commands, hashCommands(commands));
   }
 
+  /**
+   * Récupère le nom, l'avatar et la bannière du bot et les envoie maintenant, même
+   * s'ils n'ont pas changé. Renvoie la réponse de l'API, ou `null` si ce process
+   * n'est pas la shard 0. Rejette avec une `BotListError` en cas d'échec.
+   */
+  async postProfile(): Promise<ProfileData | null> {
+    const botId = this.#primaryBotId();
+    if (botId === null) return null;
+
+    return this.#sendProfile(botId, await fetchBotProfile(this.client));
+  }
+
   /** Démarre l'envoi automatique (appelé par le constructeur si `autoPost` vaut `true`). */
   start(): void {
     if (this.#running) return;
@@ -161,6 +198,7 @@ export class BotListClient extends EventEmitter {
 
     this.#running = true;
     this.#failures = 0;
+    if (this.#autoProfile) this.#watchUserUpdates();
 
     if (this.#isClientReady()) {
       this.#schedule(0);
@@ -176,10 +214,16 @@ export class BotListClient extends EventEmitter {
     this.#running = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
-    if (this.#commandsTimer) clearTimeout(this.#commandsTimer);
-    this.#commandsTimer = null;
-    this.#commandsStarted = false;
+    for (const state of Object.values(this.#sync)) {
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+    }
+    this.#syncStarted = false;
     this.#clearReadyWatch();
+    if (this.#userUpdateListener) {
+      (this.client as unknown as EventEmitter).off('userUpdate', this.#userUpdateListener);
+      this.#userUpdateListener = null;
+    }
   }
 
   /** Renvoie l'ID du bot, `null` hors de la shard 0, ou lève une erreur si l'envoi est impossible. */
@@ -206,10 +250,11 @@ export class BotListClient extends EventEmitter {
       await this.postStats();
       this.#failures = 0;
       delay = this.#normalInterval();
-      // Les commandes partent une première fois juste après le premier signal réussi.
-      if (this.#autoCommands && !this.#commandsStarted) {
-        this.#commandsStarted = true;
-        this.#scheduleCommands(0);
+      // Commandes et profil partent une première fois juste après le premier signal réussi.
+      if (!this.#syncStarted) {
+        this.#syncStarted = true;
+        if (this.#autoCommands) this.#scheduleSync('commands', 0);
+        if (this.#autoProfile) this.#scheduleSync('profile', 0);
       }
     } catch (error) {
       delay = this.#handleCycleError(toBotListError(error));
@@ -269,20 +314,41 @@ export class BotListClient extends EventEmitter {
     return data;
   }
 
-  /** Cycle des commandes, indépendant du signal de vie : il ne le retarde jamais. */
-  async #commandsTick(): Promise<void> {
-    this.#commandsTimer = null;
+  async #sendProfile(botId: string, profile: BotProfile): Promise<ProfileData> {
+    let data: ProfileData;
+    try {
+      data = await pushProfile({ baseUrl: this.baseUrl, token: this.#token, payload: { bot_id: botId, ...profile } });
+    } catch (error) {
+      const botListError = toBotListError(error);
+      if (botListError.isAuthError) this.stop();
+      throw botListError;
+    }
+
+    this.#sentProfileKey = profileKey(profile);
+    this.#logger.debug(`Profil envoyé : ${profile.username}.`);
+    if (data.review_required) {
+      this.#logger.warn(
+        `Le nom du bot a changé (${profile.username}) : sa fiche Bot List repasse en attente de vérification.`,
+      );
+    }
+    this.#safeEmit('profilePosted', data);
+    return data;
+  }
+
+  /** Cycle d'un envoi secondaire (commandes ou profil), indépendant du signal de vie. */
+  async #syncTick(kind: SyncKind): Promise<void> {
+    this.#sync[kind].timer = null;
     if (!this.#running) return;
 
     let delay: number | null;
     try {
-      delay = await this.#syncCommands();
-      this.#commandsFailures = 0;
+      delay = kind === 'commands' ? await this.#syncCommands() : await this.#syncProfile();
+      this.#sync[kind].failures = 0;
     } catch (error) {
-      delay = this.#handleCommandsError(toBotListError(error));
+      delay = this.#handleSyncError(kind, toBotListError(error));
     }
 
-    if (this.#running && delay !== null) this.#scheduleCommands(delay * 1000);
+    if (this.#running && delay !== null) this.#scheduleSync(kind, delay * 1000);
   }
 
   /** Envoie les commandes seulement si elles ont changé. Renvoie le délai avant la prochaine vérification. */
@@ -303,8 +369,22 @@ export class BotListClient extends EventEmitter {
     return COMMANDS_INTERVAL;
   }
 
-  /** Renvoie le délai avant le prochain essai des commandes, en secondes, ou `null` pour arrêter. */
-  #handleCommandsError(error: BotListError): number | null {
+  /** Envoie le profil seulement s'il a changé. Renvoie le délai avant la prochaine vérification. */
+  async #syncProfile(): Promise<number> {
+    const botId = this.#primaryBotId();
+    if (botId === null) return PROFILE_INTERVAL;
+
+    const profile = await fetchBotProfile(this.client);
+    if (profileKey(profile) === this.#sentProfileKey) {
+      this.#logger.debug('Profil inchangé, rien à envoyer.');
+    } else {
+      await this.#sendProfile(botId, profile);
+    }
+    return PROFILE_INTERVAL;
+  }
+
+  /** Renvoie le délai avant le prochain essai d'un envoi secondaire, en secondes, ou `null` pour arrêter. */
+  #handleSyncError(kind: SyncKind, error: BotListError): number | null {
     if (error.isAuthError) {
       // Clé refusée : tous les envois s'arrêtent, signal de vie compris.
       this.stop();
@@ -314,33 +394,47 @@ export class BotListClient extends EventEmitter {
 
     if (error.code === 'rate_limited') {
       const retryAfter = Math.max(1, error.retryAfter ?? MIN_INTERVAL);
-      this.#logger.debug(`Limite de requêtes atteinte, commandes renvoyées dans ${retryAfter} s.`);
+      this.#logger.debug(`Limite de requêtes atteinte, nouvel essai (${SYNC_LABELS[kind]}) dans ${retryAfter} s.`);
       this.#safeEmit('ratelimited', retryAfter);
       return retryAfter;
     }
 
+    const state = this.#sync[kind];
     if (error.code === 'client_not_ready') {
       this.#logger.debug(error.message);
-      this.#commandsFailures += 1;
-      return backoffDelay(this.#commandsFailures, COMMANDS_INTERVAL);
+      state.failures += 1;
+      return backoffDelay(state.failures, SYNC_INTERVALS[kind]);
     }
 
     this.#emitError(error);
-    if (error.isTemporary || error.code === 'commands_fetch_failed') {
-      this.#commandsFailures += 1;
-      return backoffDelay(this.#commandsFailures, COMMANDS_INTERVAL);
+    if (error.isTemporary || error.code === 'commands_fetch_failed' || error.code === 'profile_fetch_failed') {
+      state.failures += 1;
+      return backoffDelay(state.failures, SYNC_INTERVALS[kind]);
     }
     // 413, 422... : nouvelle vérification au cycle suivant.
-    return COMMANDS_INTERVAL;
+    return SYNC_INTERVALS[kind];
   }
 
-  #scheduleCommands(delayMs: number): void {
-    if (this.#commandsTimer) clearTimeout(this.#commandsTimer);
-    this.#commandsTimer = setTimeout(() => {
-      this.#commandsTick().catch((error: unknown) => this.#logger.error(`Erreur inattendue : ${String(error)}`));
+  #scheduleSync(kind: SyncKind, delayMs: number): void {
+    const state = this.#sync[kind];
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      this.#syncTick(kind).catch((error: unknown) => this.#logger.error(`Erreur inattendue : ${String(error)}`));
     }, delayMs);
     // Ne pas empêcher le process de s'arrêter.
-    this.#commandsTimer.unref?.();
+    state.timer.unref?.();
+  }
+
+  /** Renvoie le profil peu après une modification du compte du bot, sans attendre la vérification horaire. */
+  #watchUserUpdates(): void {
+    if (this.#userUpdateListener) return;
+    this.#userUpdateListener = (_oldUser, newUser) => {
+      const id = (newUser as { id?: unknown } | null)?.id;
+      if (!this.#running || !this.#syncStarted || id === undefined || id !== this.client.user?.id) return;
+      this.#logger.debug('Profil Discord du bot modifié, envoi à Bot List sous peu.');
+      this.#scheduleSync('profile', PROFILE_UPDATE_DELAY_MS);
+    };
+    (this.client as unknown as EventEmitter).on('userUpdate', this.#userUpdateListener);
   }
 
   #normalInterval(): number {

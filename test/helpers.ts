@@ -17,13 +17,33 @@ interface FakeClientOptions {
   shard?: FakeShard | null;
   /** Commandes globales renvoyées par le faux `client.rest.get`. */
   commands?: unknown[];
+  /** Compte du bot renvoyé par le faux `client.rest.get('/users/@me')`. */
+  profile?: Record<string, unknown>;
 }
 
-export function fakeClient({ guilds = 42, ready = true, shard = null, commands = [] }: FakeClientOptions = {}) {
+export const AVATAR = 'a'.repeat(32);
+export const BANNER = 'b'.repeat(32);
+
+export function botUser(overrides: Record<string, unknown> = {}) {
+  return { id: BOT_ID, username: 'Mon Bot', discriminator: '0', avatar: AVATAR, banner: BANNER, bot: true, ...overrides };
+}
+
+export function fakeClient({
+  guilds = 42,
+  ready = true,
+  shard = null,
+  commands = [],
+  profile = botUser(),
+}: FakeClientOptions = {}) {
   const emitter = new EventEmitter() as EventEmitter & Record<string, unknown>;
   let isReady = ready;
+  let currentCommands = commands;
+  let currentProfile = profile;
   const rest = {
-    get: vi.fn(async (_route: string, _options?: { query?: URLSearchParams }): Promise<unknown> => commands),
+    get: vi.fn(
+      async (route: string, _options?: { query?: URLSearchParams }): Promise<unknown> =>
+        route === '/users/@me' ? currentProfile : currentCommands,
+    ),
   };
   Object.assign(emitter, {
     user: ready ? { id: BOT_ID } : null,
@@ -39,7 +59,17 @@ export function fakeClient({ guilds = 42, ready = true, shard = null, commands =
     rest,
     /** Change la liste renvoyée par Discord. */
     setCommands(next: unknown[]) {
-      rest.get.mockImplementation(async () => next);
+      currentCommands = next;
+    },
+    /** Change le compte renvoyé par Discord, sans émettre d'événement. */
+    setProfile(next: Record<string, unknown>) {
+      currentProfile = next;
+    },
+    /** Change le compte et émet `userUpdate`, comme discord.js après un USER_UPDATE. */
+    updateUser(next: Record<string, unknown>) {
+      const previous = currentProfile;
+      currentProfile = next;
+      emitter.emit('userUpdate', previous, next);
     },
     setReady() {
       isReady = true;
@@ -94,15 +124,34 @@ export const commandsOk = (overrides: Record<string, unknown> = {}) =>
     data: { bot_id: BOT_ID, commands_count: 0, changed: true, received_at: '2026-10-20T12:00:00Z', ...overrides },
   });
 
+export const profileOk = (overrides: Record<string, unknown> = {}) =>
+  jsonResponse(200, {
+    ok: true,
+    data: { bot_id: BOT_ID, changed: true, review_required: false, received_at: '2026-10-21T12:00:00Z', ...overrides },
+  });
+
+type Route = 'push' | 'commands' | 'profile';
+
+function routeOf(url: unknown): Route {
+  const path = String(url);
+  if (path.endsWith('/api/sdk/commands')) return 'commands';
+  if (path.endsWith('/api/sdk/profile')) return 'profile';
+  return 'push';
+}
+
 /**
  * Remplace fetch par un mock qui répond selon l'endpoint appelé. Chaque liste est
  * consommée dans l'ordre, la dernière réponse étant répétée.
  */
-export function mockApi(routes: { push?: MockedResponse[]; commands?: MockedResponse[] }) {
-  const queues = { push: routes.push ?? [ok()], commands: routes.commands ?? [commandsOk()] };
-  const counters = { push: 0, commands: 0 };
+export function mockApi(routes: Partial<Record<Route, MockedResponse[]>>) {
+  const queues: Record<Route, MockedResponse[]> = {
+    push: routes.push ?? [ok()],
+    commands: routes.commands ?? [commandsOk()],
+    profile: routes.profile ?? [profileOk()],
+  };
+  const counters: Record<Route, number> = { push: 0, commands: 0, profile: 0 };
   const fn = vi.fn(async (url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    const route = String(url).endsWith('/api/sdk/commands') ? 'commands' : 'push';
+    const route = routeOf(url);
     const queue = queues[route];
     const next = queue[Math.min(counters[route], queue.length - 1)]!;
     counters[route] += 1;
@@ -113,8 +162,7 @@ export function mockApi(routes: { push?: MockedResponse[]; commands?: MockedResp
   vi.stubGlobal('fetch', fn);
   return {
     fetch: fn,
-    calls: (route: 'push' | 'commands') =>
-      fn.mock.calls.filter(([url]) => (route === 'commands') === String(url).endsWith('/api/sdk/commands')),
+    calls: (route: Route) => fn.mock.calls.filter(([url]) => routeOf(url) === route),
   };
 }
 

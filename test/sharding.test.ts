@@ -5,7 +5,7 @@ import { TOKEN, fakeClient, flush, mockFetch, ok, sentBody } from './helpers.js'
 const instances: BotListClient[] = [];
 // Les commandes slash sont testées dans commands.test.ts.
 function create(client: BotListClient['client'], options: BotListClientOptions) {
-  const botlist = new BotListClient(client, { postCommands: false, ...options });
+  const botlist = new BotListClient(client, { postCommands: false, postProfile: false, ...options });
   instances.push(botlist);
   return botlist;
 }

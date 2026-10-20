@@ -10,7 +10,7 @@ export interface BotListClientOptions {
    * `next_push_in` renvoyée par l'API (300 s). Borné entre 60 et 840 s.
    */
   interval?: number;
-  /** URL de l'API Bot List (défaut : `https://beta.botlist.top`). */
+  /** URL de l'API Bot List (défaut : `https://botlist.top`). */
   baseUrl?: string;
   /** Affiche des logs de diagnostic dans la console (défaut : `false`). */
   debug?: boolean;
@@ -19,6 +19,11 @@ export interface BotListClientOptions {
    * l'onglet « Commandes » de sa fiche (défaut : `true`).
    */
   postCommands?: boolean;
+  /**
+   * Tient à jour le nom, l'avatar et la bannière du bot sur sa fiche (défaut : `true`).
+   * Un changement de nom fait repasser la fiche en attente de vérification.
+   */
+  postProfile?: boolean;
 }
 
 /** Corps envoyé à `POST /api/sdk/push`. */
@@ -60,10 +65,32 @@ export interface CommandsData {
   received_at: string;
 }
 
+/** Corps envoyé à `POST /api/sdk/profile`. */
+export interface ProfilePayload {
+  bot_id: string;
+  username: string;
+  /** Hash de l'avatar Discord, `null` pour l'avatar par défaut. */
+  avatar: string | null;
+  /** Hash de la bannière Discord, `null` sans bannière. */
+  banner: string | null;
+}
+
+/** Données renvoyées par l'API après un envoi de profil réussi. */
+export interface ProfileData {
+  bot_id: string;
+  /** `false` si le profil était identique à celui déjà enregistré. */
+  changed: boolean;
+  /** `true` si le nom a changé : la fiche repasse en attente de vérification. */
+  review_required: boolean;
+  /** Date de réception (ISO 8601). */
+  received_at: string;
+}
+
 /** Événements émis par `BotListClient`. */
 export interface BotListEvents {
   posted: [data: PushData];
   commandsPosted: [data: CommandsData];
+  profilePosted: [data: ProfileData];
   error: [error: BotListError];
   ratelimited: [retryAfter: number];
 }

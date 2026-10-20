@@ -50,7 +50,7 @@ const BAN = {
 
 const instances: BotListClient[] = [];
 function create(client: BotListClient['client'], options: Partial<BotListClientOptions> = {}) {
-  const botlist = new BotListClient(client, { token: TOKEN, ...options });
+  const botlist = new BotListClient(client, { token: TOKEN, postProfile: false, ...options });
   instances.push(botlist);
   return botlist;
 }
@@ -91,7 +91,7 @@ describe('envoi des commandes slash', () => {
     await boot();
 
     const urls = api.fetch.mock.calls.map(([url]) => String(url));
-    expect(urls).toEqual(['https://beta.botlist.top/api/sdk/push', 'https://beta.botlist.top/api/sdk/commands']);
+    expect(urls).toEqual(['https://botlist.top/api/sdk/push', 'https://botlist.top/api/sdk/commands']);
 
     const [, init] = api.calls('commands')[0]!;
     expect(init?.headers).toMatchObject({ Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' });

@@ -5,7 +5,7 @@ import { BOT_ID, TOKEN, fakeClient, flush, jsonResponse, mockFetch, ok, sentBody
 const instances: BotListClient[] = [];
 // Les commandes slash sont testées dans commands.test.ts.
 function create(client: BotListClient['client'], options: BotListClientOptions) {
-  const botlist = new BotListClient(client, { postCommands: false, ...options });
+  const botlist = new BotListClient(client, { postCommands: false, postProfile: false, ...options });
   instances.push(botlist);
   return botlist;
 }
@@ -35,7 +35,7 @@ describe('envoi réussi', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('https://beta.botlist.top/api/sdk/push');
+    expect(url).toBe('https://botlist.top/api/sdk/push');
     expect(init?.method).toBe('POST');
     expect(init?.headers).toMatchObject({
       Authorization: `Bearer ${TOKEN}`,
