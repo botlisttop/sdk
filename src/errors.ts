@@ -6,6 +6,7 @@ export type BotListErrorCode =
   | 'owner_banned'
   | 'forbidden'
   | 'validation_failed'
+  | 'payload_too_large'
   | 'rate_limited'
   | 'server_error'
   | 'http_error'
@@ -13,7 +14,8 @@ export type BotListErrorCode =
   | 'timeout'
   | 'invalid_response'
   | 'client_not_ready'
-  | 'shards_not_ready';
+  | 'shards_not_ready'
+  | 'commands_fetch_failed';
 
 export interface BotListErrorOptions {
   code: BotListErrorCode;
@@ -75,6 +77,8 @@ export function describeError(code: BotListErrorCode, context: { botId?: string;
       return `Bot List refuse l'envoi des statistiques pour ce bot. Vérifiez que le bot est bien enregistré sur Bot List et que la clé est la sienne (${DASHBOARD_HINT}). L'envoi automatique est arrêté.`;
     case 'validation_failed':
       return "Bot List a refusé les données envoyées (validation échouée). Nouvel essai au prochain cycle.";
+    case 'payload_too_large':
+      return "La liste des commandes dépasse la taille acceptée par Bot List (512 Ko au maximum). Elle ne sera renvoyée qu'après une modification de vos commandes.";
     case 'rate_limited':
       return "Trop de requêtes vers Bot List (limite : 10 par minute et par bot). Le SDK attend avant de reprendre.";
     case 'server_error':
@@ -91,5 +95,7 @@ export function describeError(code: BotListErrorCode, context: { botId?: string;
       return "Le client Discord n'est pas encore connecté : attendez l'événement \"clientReady\" avant d'appeler postStats().";
     case 'shards_not_ready':
       return "Toutes les shards ne sont pas encore prêtes : impossible de compter les serveurs. Nouvel essai sous peu.";
+    case 'commands_fetch_failed':
+      return "Impossible de récupérer les commandes slash du bot auprès de Discord. Nouvel essai sous peu.";
   }
 }

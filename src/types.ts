@@ -14,6 +14,11 @@ export interface BotListClientOptions {
   baseUrl?: string;
   /** Affiche des logs de diagnostic dans la console (défaut : `false`). */
   debug?: boolean;
+  /**
+   * Envoie automatiquement les commandes slash globales du bot, affichées dans
+   * l'onglet « Commandes » de sa fiche (défaut : `true`).
+   */
+  postCommands?: boolean;
 }
 
 /** Corps envoyé à `POST /api/sdk/push`. */
@@ -38,9 +43,27 @@ export interface PushData {
   online_window: number;
 }
 
+/** Corps envoyé à `POST /api/sdk/commands`. */
+export interface CommandsPayload {
+  bot_id: string;
+  /** Commandes globales au format de l'API Discord (snake_case). */
+  commands: Record<string, unknown>[];
+}
+
+/** Données renvoyées par l'API après un envoi de commandes réussi. */
+export interface CommandsData {
+  bot_id: string;
+  commands_count: number;
+  /** `false` si la liste était identique à celle déjà enregistrée. */
+  changed: boolean;
+  /** Date de réception (ISO 8601). */
+  received_at: string;
+}
+
 /** Événements émis par `BotListClient`. */
 export interface BotListEvents {
   posted: [data: PushData];
+  commandsPosted: [data: CommandsData];
   error: [error: BotListError];
   ratelimited: [retryAfter: number];
 }
