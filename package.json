@@ -1,6 +1,6 @@
 {
   "name": "@botlisttop/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SDK officiel de Bot List (botlist.top) : envoie automatiquement le nombre de serveurs, le statut en ligne et les commandes slash de votre bot discord.js.",
   "keywords": [
     "discord",
