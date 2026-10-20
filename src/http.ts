@@ -1,5 +1,5 @@
 import { BotListError, describeError, type BotListErrorCode } from './errors.js';
-import type { PushData, PushPayload } from './types.js';
+import type { CommandsData, CommandsPayload, PushData, PushPayload } from './types.js';
 import { SDK_VERSION } from './version.js';
 
 export const REQUEST_TIMEOUT_MS = 10_000;
@@ -12,6 +12,7 @@ const API_ERROR_CODES = new Set<BotListErrorCode>([
   'owner_banned',
   'forbidden',
   'validation_failed',
+  'payload_too_large',
   'rate_limited',
 ]);
 
@@ -23,21 +24,33 @@ interface ApiErrorBody {
   retry_after?: number;
 }
 
-export interface PushRequest {
+interface ApiRequest<P> {
   baseUrl: string;
   token: string;
-  payload: PushPayload;
+  payload: P;
 }
 
+export type PushRequest = ApiRequest<PushPayload>;
+export type CommandsRequest = ApiRequest<CommandsPayload>;
+
 /** Envoie les statistiques à Bot List. Rejette toujours avec une `BotListError`. */
-export async function pushStats({ baseUrl, token, payload }: PushRequest): Promise<PushData> {
+export function pushStats(request: PushRequest): Promise<PushData> {
+  return post<PushData>('/api/sdk/push', request);
+}
+
+/** Envoie les commandes slash à Bot List. Rejette toujours avec une `BotListError`. */
+export function pushCommands(request: CommandsRequest): Promise<CommandsData> {
+  return post<CommandsData>('/api/sdk/commands', request);
+}
+
+async function post<T>(path: string, { baseUrl, token, payload }: ApiRequest<PushPayload | CommandsPayload>): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   timeout.unref?.();
 
   let response: Response;
   try {
-    response = await fetch(`${baseUrl}/api/sdk/push`, {
+    response = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -60,7 +73,7 @@ export async function pushStats({ baseUrl, token, payload }: PushRequest): Promi
 
   if (response.ok) {
     if (isRecord(body) && body.ok === true && isRecord(body.data)) {
-      return body.data as unknown as PushData;
+      return body.data as T;
     }
     throw new BotListError({ code: 'invalid_response', status: response.status, message: describeError('invalid_response') });
   }
@@ -91,6 +104,8 @@ function resolveCode(status: number, apiCode: string | undefined): BotListErrorC
       return 'invalid_token';
     case 403:
       return 'forbidden';
+    case 413:
+      return 'payload_too_large';
     case 422:
       return 'validation_failed';
     case 429:

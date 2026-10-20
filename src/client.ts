@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
 import type { Client } from 'discord.js';
 import { BotListError, describeError } from './errors.js';
-import { pushStats } from './http.js';
+import { fetchGlobalCommands, hashCommands, prepareCommands } from './commands.js';
+import { pushCommands, pushStats } from './http.js';
 import { Logger, maskToken } from './logger.js';
 import { collectStats, isPrimaryShard } from './stats.js';
-import type { BotListClientOptions, BotListEvents, PushData } from './types.js';
+import type { BotListClientOptions, BotListEvents, CommandsData, PushData } from './types.js';
 import { SDK_VERSION } from './version.js';
 
 export const DEFAULT_BASE_URL = 'https://beta.botlist.top';
@@ -15,6 +16,8 @@ export const MIN_INTERVAL = 60;
 export const MAX_INTERVAL = 840;
 /** Premier délai de nouvel essai après une erreur temporaire, en secondes. */
 export const BACKOFF_BASE = 30;
+/** Délai entre deux vérifications des commandes slash, en secondes. */
+export const COMMANDS_INTERVAL = 3600;
 const READY_POLL_MS = 2_000;
 
 type Listener<E extends keyof BotListEvents> = (...args: BotListEvents[E]) => void;
@@ -29,7 +32,8 @@ export interface BotListClient {
 }
 
 /**
- * Envoie automatiquement à Bot List le nombre de serveurs du bot et un signal de vie.
+ * Envoie automatiquement à Bot List le nombre de serveurs du bot, un signal de vie
+ * et ses commandes slash globales.
  *
  * ```js
  * const botlist = new BotListClient(client, { token: process.env.BOTLIST_TOKEN });
@@ -43,6 +47,7 @@ export class BotListClient extends EventEmitter {
   readonly #token: string;
   readonly #fixedInterval: number | null;
   readonly #logger: Logger;
+  readonly #autoCommands: boolean;
 
   #running = false;
   #timer: NodeJS.Timeout | null = null;
@@ -50,6 +55,14 @@ export class BotListClient extends EventEmitter {
   #readyListener: (() => void) | null = null;
   #apiInterval = DEFAULT_INTERVAL;
   #failures = 0;
+
+  #commandsTimer: NodeJS.Timeout | null = null;
+  #commandsStarted = false;
+  #commandsFailures = 0;
+  /** Empreinte de la dernière liste envoyée avec succès. */
+  #sentCommandsHash: string | null = null;
+  /** Empreinte d'une liste refusée car trop volumineuse (413) : pas de renvoi tant qu'elle ne change pas. */
+  #rejectedCommandsHash: string | null = null;
 
   constructor(client: Client, options: BotListClientOptions) {
     super();
@@ -62,6 +75,7 @@ export class BotListClient extends EventEmitter {
     this.#token = typeof options?.token === 'string' ? options.token.trim() : '';
     this.baseUrl = (options?.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
     this.#fixedInterval = this.#resolveInterval(options?.interval);
+    this.#autoCommands = options?.postCommands !== false;
 
     this.#logger.debug(
       `SDK ${SDK_VERSION} initialisé (clé : ${maskToken(this.#token)}, intervalle : ${
@@ -83,16 +97,8 @@ export class BotListClient extends EventEmitter {
    * Rejette avec une `BotListError` en cas d'échec.
    */
   async postStats(): Promise<PushData | null> {
-    if (!this.#token) {
-      this.stop();
-      throw new BotListError({ code: 'missing_token', message: describeError('missing_token') });
-    }
-    if (!isPrimaryShard(this.client)) return null;
-
-    const botId = this.client.user?.id;
-    if (!botId) {
-      throw new BotListError({ code: 'client_not_ready', message: describeError('client_not_ready') });
-    }
+    const botId = this.#primaryBotId();
+    if (botId === null) return null;
 
     const stats = await collectStats(this.client);
 
@@ -121,6 +127,19 @@ export class BotListClient extends EventEmitter {
     this.#logger.debug(`Statistiques envoyées : ${stats.serverCount} serveur(s), ${stats.shardCount} shard(s).`);
     this.#safeEmit('posted', data);
     return data;
+  }
+
+  /**
+   * Récupère les commandes slash globales du bot et les envoie maintenant, même si
+   * elles n'ont pas changé. Renvoie la réponse de l'API, ou `null` si ce process
+   * n'est pas la shard 0. Rejette avec une `BotListError` en cas d'échec.
+   */
+  async postCommands(): Promise<CommandsData | null> {
+    const botId = this.#primaryBotId();
+    if (botId === null) return null;
+
+    const commands = prepareCommands(await fetchGlobalCommands(this.client));
+    return this.#sendCommands(botId, commands, hashCommands(commands));
   }
 
   /** Démarre l'envoi automatique (appelé par le constructeur si `autoPost` vaut `true`). */
@@ -157,7 +176,25 @@ export class BotListClient extends EventEmitter {
     this.#running = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
+    if (this.#commandsTimer) clearTimeout(this.#commandsTimer);
+    this.#commandsTimer = null;
+    this.#commandsStarted = false;
     this.#clearReadyWatch();
+  }
+
+  /** Renvoie l'ID du bot, `null` hors de la shard 0, ou lève une erreur si l'envoi est impossible. */
+  #primaryBotId(): string | null {
+    if (!this.#token) {
+      this.stop();
+      throw new BotListError({ code: 'missing_token', message: describeError('missing_token') });
+    }
+    if (!isPrimaryShard(this.client)) return null;
+
+    const botId = this.client.user?.id;
+    if (!botId) {
+      throw new BotListError({ code: 'client_not_ready', message: describeError('client_not_ready') });
+    }
+    return botId;
   }
 
   async #tick(): Promise<void> {
@@ -169,6 +206,11 @@ export class BotListClient extends EventEmitter {
       await this.postStats();
       this.#failures = 0;
       delay = this.#normalInterval();
+      // Les commandes partent une première fois juste après le premier signal réussi.
+      if (this.#autoCommands && !this.#commandsStarted) {
+        this.#commandsStarted = true;
+        this.#scheduleCommands(0);
+      }
     } catch (error) {
       delay = this.#handleCycleError(toBotListError(error));
     }
@@ -206,7 +248,99 @@ export class BotListClient extends EventEmitter {
   /** 30 s, 60 s, 120 s... plafonné à l'intervalle normal. */
   #backoff(): number {
     this.#failures += 1;
-    return Math.min(BACKOFF_BASE * 2 ** (this.#failures - 1), this.#normalInterval());
+    return backoffDelay(this.#failures, this.#normalInterval());
+  }
+
+  async #sendCommands(botId: string, commands: Record<string, unknown>[], hash: string): Promise<CommandsData> {
+    let data: CommandsData;
+    try {
+      data = await pushCommands({ baseUrl: this.baseUrl, token: this.#token, payload: { bot_id: botId, commands } });
+    } catch (error) {
+      const botListError = toBotListError(error);
+      if (botListError.isAuthError) this.stop();
+      if (botListError.code === 'payload_too_large') this.#rejectedCommandsHash = hash;
+      throw botListError;
+    }
+
+    this.#sentCommandsHash = hash;
+    this.#rejectedCommandsHash = null;
+    this.#logger.debug(`Commandes envoyées : ${commands.length} commande(s).`);
+    this.#safeEmit('commandsPosted', data);
+    return data;
+  }
+
+  /** Cycle des commandes, indépendant du signal de vie : il ne le retarde jamais. */
+  async #commandsTick(): Promise<void> {
+    this.#commandsTimer = null;
+    if (!this.#running) return;
+
+    let delay: number | null;
+    try {
+      delay = await this.#syncCommands();
+      this.#commandsFailures = 0;
+    } catch (error) {
+      delay = this.#handleCommandsError(toBotListError(error));
+    }
+
+    if (this.#running && delay !== null) this.#scheduleCommands(delay * 1000);
+  }
+
+  /** Envoie les commandes seulement si elles ont changé. Renvoie le délai avant la prochaine vérification. */
+  async #syncCommands(): Promise<number> {
+    const botId = this.#primaryBotId();
+    if (botId === null) return COMMANDS_INTERVAL;
+
+    const commands = prepareCommands(await fetchGlobalCommands(this.client));
+    const hash = hashCommands(commands);
+
+    if (hash === this.#sentCommandsHash) {
+      this.#logger.debug('Commandes inchangées, rien à envoyer.');
+    } else if (hash === this.#rejectedCommandsHash) {
+      this.#logger.debug("Commandes toujours trop volumineuses, rien à envoyer tant qu'elles ne changent pas.");
+    } else {
+      await this.#sendCommands(botId, commands, hash);
+    }
+    return COMMANDS_INTERVAL;
+  }
+
+  /** Renvoie le délai avant le prochain essai des commandes, en secondes, ou `null` pour arrêter. */
+  #handleCommandsError(error: BotListError): number | null {
+    if (error.isAuthError) {
+      // Clé refusée : tous les envois s'arrêtent, signal de vie compris.
+      this.stop();
+      this.#emitError(error);
+      return null;
+    }
+
+    if (error.code === 'rate_limited') {
+      const retryAfter = Math.max(1, error.retryAfter ?? MIN_INTERVAL);
+      this.#logger.debug(`Limite de requêtes atteinte, commandes renvoyées dans ${retryAfter} s.`);
+      this.#safeEmit('ratelimited', retryAfter);
+      return retryAfter;
+    }
+
+    if (error.code === 'client_not_ready') {
+      this.#logger.debug(error.message);
+      this.#commandsFailures += 1;
+      return backoffDelay(this.#commandsFailures, COMMANDS_INTERVAL);
+    }
+
+    this.#emitError(error);
+    if (error.isTemporary || error.code === 'commands_fetch_failed') {
+      this.#commandsFailures += 1;
+      return backoffDelay(this.#commandsFailures, COMMANDS_INTERVAL);
+    }
+    // 413, 422... : nouvelle vérification au cycle suivant.
+    return COMMANDS_INTERVAL;
+  }
+
+  #scheduleCommands(delayMs: number): void {
+    if (this.#commandsTimer) clearTimeout(this.#commandsTimer);
+    this.#commandsTimer = setTimeout(() => {
+      this.#commandsTick().catch((error: unknown) => this.#logger.error(`Erreur inattendue : ${String(error)}`));
+    }, delayMs);
+    // Ne pas empêcher le process de s'arrêter.
+    this.#commandsTimer.unref?.();
   }
 
   #normalInterval(): number {
@@ -284,6 +418,11 @@ export class BotListClient extends EventEmitter {
       this.#logger.error(`Un écouteur de l'événement "${event}" a levé une exception : ${String(error)}`);
     }
   }
+}
+
+/** 30 s, 60 s, 120 s... plafonné à `max`, en secondes. */
+function backoffDelay(failures: number, max: number): number {
+  return Math.min(BACKOFF_BASE * 2 ** (failures - 1), max);
 }
 
 function clamp(value: number, min: number, max: number): number {

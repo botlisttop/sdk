@@ -1,6 +1,6 @@
-// Usage complet des événements et de l'envoi manuel, en TypeScript.
+// Usage complet des événements, de l'envoi manuel et des commandes slash, en TypeScript.
 import { Client, Events, GatewayIntentBits } from 'discord.js';
-import { BotListClient, BotListError, type PushData } from '@botlisttop/sdk';
+import { BotListClient, BotListError, type CommandsData, type PushData } from '@botlisttop/sdk';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -13,13 +13,18 @@ botlist.on('posted', (data: PushData) => {
   console.log(`Bot List : ${data.server_count} serveurs, prochain envoi dans ${data.next_push_in} s.`);
 });
 
+botlist.on('commandsPosted', (data: CommandsData) => {
+  const state = data.changed ? 'mises à jour' : 'inchangées';
+  console.log(`Bot List : ${data.commands_count} commandes ${state}.`);
+});
+
 botlist.on('ratelimited', (retryAfter: number) => {
   console.warn(`Bot List : limite atteinte, reprise dans ${retryAfter} s.`);
 });
 
 botlist.on('error', (error: BotListError) => {
   if (error.isAuthError) {
-    // 401 / 403 : l'envoi automatique est arrêté, la clé doit être corrigée.
+    // 401 / 403 : tous les envois automatiques sont arrêtés, la clé doit être corrigée.
     console.error(`Bot List (envoi arrêté) : ${error.message}`);
     return;
   }
@@ -32,6 +37,18 @@ botlist.on('error', (error: BotListError) => {
 client.on(Events.GuildCreate, async () => {
   try {
     await botlist.postStats();
+  } catch (error) {
+    if (error instanceof BotListError) console.warn(`Bot List : ${error.message}`);
+  }
+});
+
+// Envoi immédiat des commandes après un déploiement, sans attendre la vérification horaire.
+client.once(Events.ClientReady, async (readyClient) => {
+  await readyClient.application.commands.set([
+    { name: 'ping', description: 'Répond pong', nameLocalizations: { 'en-US': 'ping' } },
+  ]);
+  try {
+    await botlist.postCommands();
   } catch (error) {
     if (error instanceof BotListError) console.warn(`Bot List : ${error.message}`);
   }

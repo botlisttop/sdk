@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BotListClient, BotListError, SDK_VERSION } from '../src/index.js';
+import { BotListClient, BotListError, SDK_VERSION, type BotListClientOptions } from '../src/index.js';
 import { BOT_ID, TOKEN, fakeClient, flush, jsonResponse, mockFetch, ok, sentBody } from './helpers.js';
 
 const instances: BotListClient[] = [];
-function create(...args: ConstructorParameters<typeof BotListClient>) {
-  const botlist = new BotListClient(...args);
+// Les commandes slash sont testées dans commands.test.ts.
+function create(client: BotListClient['client'], options: BotListClientOptions) {
+  const botlist = new BotListClient(client, { postCommands: false, ...options });
   instances.push(botlist);
   return botlist;
 }
