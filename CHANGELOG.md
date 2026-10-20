@@ -3,6 +3,13 @@
 Toutes les évolutions notables de `@botlisttop/sdk` sont listées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le projet respecte le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.3.0] - 2026-10-20
+
+### Ajouté
+
+- Publication automatique sur npmjs à chaque Release GitHub, par trusted publishing (OIDC) avec attestation de provenance.
+- Champ `repository` dans le `package.json`, qui relie le paquet au dépôt GitHub.
+
 ## [0.2.0] - 2026-10-20
 
 ### Ajouté
@@ -28,5 +35,6 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et le pr
 - Événements `posted`, `error` et `ratelimited`, méthodes `postStats()`, `start()` et `stop()`.
 - Builds CommonJS et ESM, types TypeScript inclus.
 
+[0.3.0]: https://github.com/botlisttop/sdk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/botlisttop/sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/botlisttop/sdk/releases/tag/v0.1.0
