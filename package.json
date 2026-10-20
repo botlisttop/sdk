@@ -13,6 +13,10 @@
     "slash commands"
   ],
   "homepage": "https://botlist.top",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/botlisttop/sdk.git"
+  },
   "license": "MIT",
   "author": "Bot List Top",
   "main": "./dist/index.js",

@@ -1,0 +1,25 @@
+name: Publish
+
+# Publie le paquet sur npmjs à chaque Release publiée sur GitHub.
+# Authentification par « trusted publishing » (OIDC) : aucun jeton npm à stocker.
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Requis pour l'authentification OIDC auprès de npm.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Le trusted publishing demande npm 11.5.1 ou plus récent.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      # prepublishOnly lance le typecheck, les tests et le build avant la publication.
+      - run: npm publish
